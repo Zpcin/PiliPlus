@@ -330,6 +330,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || format('v{0}-arm64', env.TAG_VERSION) }}
+          # 显式指定 tag 打在实际构建的提交上（默认会落在默认分支当时 HEAD）
+          target_commitish: ${{ needs.sync-upstream.outputs.head_sha }}
           name: PiliPlus ${{ env.TAG_VERSION }} (Windows ARM64)
           body: |
             ## PiliPlus Windows ARM64 自动构建
