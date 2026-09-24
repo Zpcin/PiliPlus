@@ -1,0 +1,360 @@
+name: Build Windows ARM64
+
+# ============================================================================
+# CI 流程：自动同步上游 + 编译 Windows ARM64 + 发布 Release
+#
+# 触发条件：
+#   1. schedule  ：每 6 小时检查上游仓库（bggRGjQaUbCoE/PiliPlus），
+#                  仅当检测到新提交时才同步并构建
+#   2. workflow_dispatch：手动触发，可指定 Release tag / 强制构建
+#   3. push      ：推送到 main / arm64 分支时触发（相关文件变更时）
+#   4. pull_request：仅在 PR 上构建验证，不发布、不同步
+#
+# Runner：GitHub 官方托管的 Windows ARM64（windows-11-arm）
+# 注意：该 runner 仅对**公共仓库**开放；私有仓库需改用 self-hosted。
+# 同步作业由 github-actions[bot] 推送，build 作业自动跳过机器人提交，
+# 避免"同步->触发->同步"的循环。
+# ============================================================================
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (留空则自动生成 v<版本>-arm64)"
+        required: false
+        default: ""
+      force_build:
+        description: "强制构建（跳过上游同步检查）"
+        required: false
+        default: false
+        type: boolean
+
+  push:
+    branches: [ main, arm64 ]
+    paths:
+      - 'lib/**'
+      - 'windows/**'
+      - 'pubspec.yaml'
+      - 'pili_release.json'
+      - '.github/workflows/win_arm64.yml'
+      - 'lib/scripts/arm64_patch.ps1'
+
+  pull_request:
+    branches: [ main, arm64 ]
+    paths:
+      - 'lib/**'
+      - 'windows/**'
+      - 'pubspec.yaml'
+      - '.github/workflows/win_arm64.yml'
+
+env:
+  FLUTTER_CHANNEL: stable
+  # 原生 ARM64 runner 上 flutter build windows 会自动选择 windows-arm64 目标；
+  # 显式设置作为双保险（push 到本分支时也可在 x64 机器上交叉触发）。
+  FLUTTER_TARGET_PLATFORM: windows-arm64
+
+jobs:
+  # ===========================================================================
+  # Job 1: 同步上游仓库（bggRGjQaUbCoE/PiliPlus -> 本仓库 main/arm64）
+  # ===========================================================================
+  sync-upstream:
+    name: Sync Upstream
+    runs-on: windows-11-arm
+    permissions:
+      contents: write
+    outputs:
+      new_commits: ${{ steps.check.outputs.new_commits }}
+      upstream_hash: ${{ steps.check.outputs.upstream_hash }}
+      branch: ${{ steps.check.outputs.branch }}
+      head_sha: ${{ steps.check.outputs.head_sha }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Sync with upstream
+        id: check
+        shell: pwsh
+        run: |
+          git remote add upstream https://github.com/bggRGjQaUbCoE/PiliPlus.git 2>$null
+          git fetch upstream main
+
+          $branch = "${{ github.ref_name }}"
+          $head = git rev-parse HEAD
+          $upstream = git rev-parse upstream/main
+
+          Write-Host "Branch:        $branch"
+          Write-Host "Fork HEAD:     $head"
+          Write-Host "Upstream main: $upstream"
+
+          $forceBuild = '${{ github.event.inputs.force_build }}' -eq 'true'
+          $isDispatch = '${{ github.event_name }}' -eq 'workflow_dispatch'
+
+          if ($isDispatch -and $forceBuild) {
+            Write-Host "Force build requested, skipping sync"
+            echo "new_commits=true" >> $env:GITHUB_OUTPUT
+            echo "upstream_hash=$upstream" >> $env:GITHUB_OUTPUT
+            echo "branch=$branch" >> $env:GITHUB_OUTPUT
+            echo "head_sha=$head" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+
+          if ('${{ github.event_name }}' -eq 'pull_request') {
+            Write-Host "PR build: no sync"
+            echo "new_commits=true" >> $env:GITHUB_OUTPUT
+            echo "upstream_hash=$upstream" >> $env:GITHUB_OUTPUT
+            echo "branch=$branch" >> $env:GITHUB_OUTPUT
+            echo "head_sha=$head" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+
+          if ($head -eq $upstream) {
+            Write-Host "No new upstream commits."
+            # schedule 事件且无新提交时跳过；push/dispatch 继续构建
+            if ('${{ github.event_name }}' -eq 'schedule') {
+              echo "new_commits=false" >> $env:GITHUB_OUTPUT
+            } else {
+              echo "new_commits=true" >> $env:GITHUB_OUTPUT
+            }
+          } else {
+            Write-Host "New upstream commits detected, merging into $branch ..."
+            # 本分支仅新增自有的 CI/patch 文件，与上游无冲突；merge 优于 reset，
+            # 避免冲掉 fork 上的自有文件。
+            git merge upstream/main --no-edit -m "chore: sync with upstream/main ($($upstream.Substring(0,8)))"
+            git push origin "HEAD:$branch"
+            echo "new_commits=true" >> $env:GITHUB_OUTPUT
+            echo "upstream_hash=$upstream" >> $env:GITHUB_OUTPUT
+          }
+          echo "branch=$branch" >> $env:GITHUB_OUTPUT
+          echo "head_sha=$(git rev-parse HEAD)" >> $env:GITHUB_OUTPUT
+
+  # ===========================================================================
+  # Job 2: 构建 Windows ARM64（原生 windows-11-arm runner）
+  #   检出 sync 作业产出的最新 SHA（可能是刚合并上游后的提交）。
+  #   跳过机器人自身的同步提交，防止循环触发。
+  # ===========================================================================
+  build:
+    name: Build Windows ARM64
+    needs: sync-upstream
+    if: |
+      needs.sync-upstream.outputs.new_commits == 'true' &&
+      !(github.event_name == 'push' &&
+        startsWith(github.event.head_commit.message, 'chore: sync with upstream/main'))
+    runs-on: windows-11-arm
+    timeout-minutes: 60
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # sync 作业可能刚把上游合并进来，必须检出合并后的提交
+          ref: ${{ needs.sync-upstream.outputs.head_sha }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify architecture
+        shell: pwsh
+        run: |
+          Write-Host "Processor Architecture: $env:PROCESSOR_ARCHITECTURE"
+          Write-Host "Runner OS:              $env:RUNNER_OS"
+          if ($env:PROCESSOR_ARCHITECTURE -ne 'ARM64') {
+            throw "Expected ARM64 runner, got: $env:PROCESSOR_ARCHITECTURE"
+          }
+
+      # --------------------------------------------------------------------
+      # Flutter SDK（版本由 pubspec.yaml 的 environment.flutter 决定）
+      # --------------------------------------------------------------------
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          flutter-version-file: pubspec.yaml
+          cache: true
+
+      - name: Flutter version
+        shell: pwsh
+        run: |
+          flutter --version
+          "precache windows artifacts:"
+          flutter precache --windows
+
+      # --------------------------------------------------------------------
+      # 依赖与补丁
+      # 顺序: pub get (生成 ephemeral/plugin_symlinks)
+      #       -> patch.ps1 windows (上游 Flutter SDK 补丁)
+      #       -> arm64_patch.ps1 (ARM64 库 URL/MD5 + 7z 解压 + /wd4819)
+      #       -> build.ps1 (版本号/构建号 -> GITHUB_ENV: version)
+      # --------------------------------------------------------------------
+      - name: Get dependencies
+        shell: pwsh
+        run: flutter pub get
+
+      - name: Apply upstream SDK patches
+        shell: pwsh
+        run: lib/scripts/patch.ps1 windows
+
+      - name: Apply ARM64 patches
+        shell: pwsh
+        run: lib/scripts/arm64_patch.ps1
+
+      - name: Verify ARM64 patches
+        shell: pwsh
+        run: |
+          $libsCmake = "windows/flutter/ephemeral/.plugin_symlinks/media_kit_libs_windows_video/windows/CMakeLists.txt"
+          if (-not (Test-Path $libsCmake)) { throw "Missing $libsCmake" }
+          $content = Get-Content $libsCmake -Raw
+          if ($content -notmatch 'windows-arm64') { throw "ARM64 branch not present in media_kit_libs CMakeLists" }
+          if ($content -match '7z x -y') { Write-Host "7z extraction patch present" }
+          Write-Host "ARM64 patches verified"
+
+      - name: Set version
+        shell: pwsh
+        run: |
+          lib/scripts/build.ps1
+          Write-Host "version = $env:version"
+
+      # --------------------------------------------------------------------
+      # 静态分析（失败不阻断构建）
+      # --------------------------------------------------------------------
+      - name: Analyze code
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          flutter analyze --no-fatal-infos --no-fatal-warnings 2>&1 |
+            Tee-Object -FilePath analyze_result.txt
+          Write-Host "analyze done"
+
+      # --------------------------------------------------------------------
+      # 编译 Windows ARM64
+      # --------------------------------------------------------------------
+      - name: Build Windows ARM64
+        shell: pwsh
+        run: |
+          Write-Host "=== Building Windows ARM64 (target: $env:FLUTTER_TARGET_PLATFORM) ==="
+          flutter build windows --release --dart-define-from-file=pili_release.json 2>&1 |
+            Tee-Object -FilePath build_log.txt
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content build_log.txt -Tail 80
+            throw "flutter build windows failed"
+          }
+          Write-Host "Build succeeded"
+
+      - name: Verify build artifacts
+        shell: pwsh
+        run: |
+          $releaseDir = "build/windows/arm64/runner/Release"
+          $exe = Join-Path $releaseDir "piliplus.exe"
+          if (-not (Test-Path $exe)) { throw "piliplus.exe not found under $releaseDir" }
+          Get-ChildItem $releaseDir |
+            Sort-Object Name |
+            Format-Table Name, @{n='MB';e={[math]::Round($_.Length/1MB,1)}} -AutoSize
+
+      # --------------------------------------------------------------------
+      # 打包便携版 zip
+      # version 形如 2.1.4+218（来自 build.ps1）；tag 使用去掉 +build 的部分
+      # --------------------------------------------------------------------
+      - name: Package portable zip
+        shell: pwsh
+        run: |
+          if (-not $env:version) { throw "version env not set by build.ps1" }
+          $zipName = "PiliPlus_windows_${env:version}_arm64_portable.zip"
+          Compress-Archive -Path "build/windows/arm64/runner/Release/*" `
+            -DestinationPath $zipName -CompressionLevel Optimal
+          Get-Item $zipName | ForEach-Object { Write-Host ("Created {0} ({1} MB)" -f $_.Name, [math]::Round($_.Length/1MB,2)) }
+          $tagVersion = $env:version -replace '\+.*$', ''
+          echo "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
+          echo "TAG_VERSION=$tagVersion" >> $env:GITHUB_ENV
+
+      - name: Upload build artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Windows-ARM64-Release
+          path: |
+            PiliPlus_windows_*.zip
+            build_log.txt
+            analyze_result.txt
+          retention-days: 30
+
+      # --------------------------------------------------------------------
+      # 发布 Release（schedule / push / 手动触发才发布；PR 不发布）
+      # --------------------------------------------------------------------
+      - name: Create or update Release
+        if: success() && github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || format('v{0}-arm64', env.TAG_VERSION) }}
+          name: PiliPlus ${{ env.TAG_VERSION }} (Windows ARM64)
+          body: |
+            ## PiliPlus Windows ARM64 自动构建
+
+            | 项目 | 值 |
+            |---|---|
+            | 版本 | ${{ env.TAG_VERSION }} |
+            | 完整版本号 | ${{ env.version }} |
+            | 构建时间 | ${{ github.run_started_at }} |
+            | 上游提交 | ${{ needs.sync-upstream.outputs.upstream_hash }} |
+            | 分支 | ${{ needs.sync-upstream.outputs.branch }} |
+
+            ### 下载
+            - `PiliPlus_windows_*_arm64_portable.zip`：便携版，解压即用，适用于 Windows 10/11 on ARM 设备
+
+            ### 来源
+            - 上游: https://github.com/bggRGjQaUbCoE/PiliPlus
+            - 本仓库: https://github.com/${{ github.repository }}
+
+            > 本版本由 GitHub Actions (windows-11-arm runner) 自动同步上游并构建
+          files: |
+            PiliPlus_windows_*.zip
+          prerelease: false
+          draft: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Notify on failure
+        if: failure()
+        shell: pwsh
+        run: |
+          Write-Host "::error::Windows ARM64 build failed! Commit: $env:GITHUB_SHA, Run: $env:GITHUB_RUN_ID"
+          if (Test-Path build_log.txt) {
+            Write-Host "===== build_log.txt (tail) ====="
+            Get-Content build_log.txt -Tail 60
+          }
+
+  # ===========================================================================
+  # Job 3: 构建摘要
+  # ===========================================================================
+  summary:
+    name: Build Summary
+    needs: [sync-upstream, build]
+    if: always()
+    runs-on: windows-11-arm
+    steps:
+      - name: Summary
+        shell: pwsh
+        run: |
+          Write-Host "=========================================="
+          Write-Host "  PiliPlus Windows ARM64 - Build Summary"
+          Write-Host "=========================================="
+          Write-Host "Event:      ${{ github.event_name }}"
+          Write-Host "Branch:     ${{ github.ref_name }}"
+          Write-Host "Commit:     ${{ github.sha }}"
+          Write-Host "Sync:       ${{ needs.sync-upstream.result }}"
+          Write-Host "Build:      ${{ needs.build.result }}"
+          if ('${{ needs.build.result }}' -eq 'success') {
+            Write-Host "Upstream:   ${{ needs.sync-upstream.outputs.upstream_hash }}"
+          }
+          Write-Host "=========================================="
