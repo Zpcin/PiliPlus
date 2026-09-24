@@ -51,7 +51,6 @@ on:
       - '.github/workflows/win_arm64.yml'
 
 env:
-  FLUTTER_CHANNEL: stable
   # 原生 ARM64 runner 上 flutter build windows 会自动选择 windows-arm64 目标；
   # 显式设置作为双保险（push 到本分支时也可在 x64 机器上交叉触发）。
   FLUTTER_TARGET_PLATFORM: windows-arm64
@@ -176,13 +175,47 @@ jobs:
 
       # --------------------------------------------------------------------
       # Flutter SDK（版本由 pubspec.yaml 的 environment.flutter 决定）
+      #
+      # 注意：不能用 subosito/flutter-action —— Flutter 官方不为 Windows
+      # 发布 arm64 SDK 压缩包（releases_windows.json 仅 x64），该 action 在
+      # windows-11-arm runner 上会报 "Unable to determine Flutter version"。
+      # 方案：git clone 官方仓库（patch.ps1 的 git apply 需要 git 元数据），
+      # 首次运行 flutter 时，update_dart_sdk.ps1 检测到 PROCESSOR_ARCHITECTURE=ARM64
+      # 会自动下载 arm64 版 dart-sdk（引擎哈希下的 dart-sdk-windows-arm64.zip）。
       # --------------------------------------------------------------------
       - name: Setup Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          channel: ${{ env.FLUTTER_CHANNEL }}
-          flutter-version-file: pubspec.yaml
-          cache: true
+        shell: pwsh
+        run: |
+          $ver = (Select-String -Path pubspec.yaml -Pattern '^\s*flutter:\s*(\d+\.\d+\.\d+)\s*$').Matches[0].Groups[1].Value
+          if (-not $ver) { throw "Cannot read flutter version from pubspec.yaml" }
+          Write-Host "Flutter version (from pubspec.yaml): $ver"
+          git clone --depth 1 --branch $ver https://github.com/flutter/flutter.git C:\flutter
+          "C:\flutter\bin" | Add-Content -Path $env:GITHUB_PATH
+          "FLUTTER_ROOT=C:\flutter" | Add-Content -Path $env:GITHUB_ENV
+
+      # 引导：下载原生 ARM64 Dart SDK 并重建 flutter_tools snapshot。
+      # 上一步的 PATH/GITHUB_ENV 在本步骤才生效，因此这里能直接调用 flutter。
+      - name: Bootstrap Flutter (native ARM64 Dart SDK)
+        shell: pwsh
+        run: |
+          # 双保险：windows-11-arm runner 本身 PROCESSOR_ARCHITECTURE 即 ARM64
+          $env:PROCESSOR_ARCHITECTURE = 'ARM64'
+          Remove-Item C:\flutter\bin\cache\flutter_tools.snapshot -Force -ErrorAction SilentlyContinue
+          flutter --version
+          flutter --version
+          # 验证 dart 是原生 ARM64 PE（读 PE 头 machine 字段：0xAA64=ARM64）
+          $dart = "C:\flutter\bin\cache\dart-sdk\bin\dart.exe"
+          if (-not (Test-Path $dart)) { throw "dart-sdk not found: $dart" }
+          $fs = [IO.File]::OpenRead($dart)
+          try {
+            $br = New-Object IO.BinaryReader($fs)
+            $fs.Position = 0x3C
+            $peOffset = $br.ReadUInt32()
+            $fs.Position = $peOffset + 4
+            $machine = $br.ReadUInt16()
+          } finally { $fs.Close() }
+          Write-Host ("dart.exe PE machine: 0x{0:X4}" -f $machine)
+          if ($machine -ne 0xAA64) { throw ("Expected ARM64 dart.exe, PE machine: 0x{0:X4}" -f $machine) }
 
       - name: Flutter version
         shell: pwsh
