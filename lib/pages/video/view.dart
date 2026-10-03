@@ -1822,7 +1822,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
                     aid: videoDetailController.aid,
                     cid: videoDetailController.cid.value,
                     isReversed: videoDetail.isPageReversed,
-                    onChangeEpisode: pgcIntroController.onChangeEpisode,
+                    onChangeEpisode: ugcIntroController.onChangeEpisode,
                     showTitle: false,
                     isSupportReverse: true,
                     onReverse: () => onReversePlay(isSeason: false),
@@ -2064,6 +2064,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
   void onShowMemberPage(int? mid) {
     videoDetailController.childKey.currentState?.showBottomSheet(
       constraints: const BoxConstraints(),
+      dragHeight: 100,
       (context) {
         return HorizontalMemberPage(
           mid: mid,
