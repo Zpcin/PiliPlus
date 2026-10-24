@@ -14,6 +14,7 @@ import 'package:PiliPlus/models/common/image_preview_type.dart';
 import 'package:PiliPlus/models/dynamics/article_content_model.dart'
     show ArticleContentModel, Rich, Style, Word, Node;
 import 'package:PiliPlus/models/dynamics/result.dart';
+import 'package:PiliPlus/pages/article/widgets/sliver_list_ext.dart';
 import 'package:PiliPlus/pages/dynamics/widgets/vote.dart';
 import 'package:PiliPlus/utils/app_scheme.dart';
 import 'package:PiliPlus/utils/extension/num_ext.dart';
@@ -37,6 +38,7 @@ class OpusContent extends StatelessWidget {
   final ValueGetter<List<SourceModel>> images;
   final double maxWidth;
   final String opusId;
+  final bool reverse;
 
   const OpusContent({
     super.key,
@@ -44,6 +46,7 @@ class OpusContent extends StatelessWidget {
     required this.images,
     required this.maxWidth,
     required this.opusId,
+    required this.reverse,
   });
 
   static InlineSpan _node2Widget({
@@ -208,7 +211,8 @@ class OpusContent extends StatelessWidget {
 
     late final highlight = Highlight()..registerLanguages(builtinAllLanguages);
 
-    return SliverList.separated(
+    return SliverListExt.separated(
+      reverse: reverse,
       itemCount: opus.length,
       itemBuilder: (context, index) {
         final element = opus[index];
@@ -216,20 +220,34 @@ class OpusContent extends StatelessWidget {
           switch (element.paraType) {
             case 1 || 4:
               final isQuote = element.paraType == 4;
+              List<InlineSpan>? spans;
+              if (element.text?.nodes case final nodes?) {
+                spans = nodes
+                    .map(
+                      (item) => _node2Widget(
+                        item: item,
+                        opusId: opusId,
+                        colorScheme: colorScheme,
+                        surfaceLuminance: getSurfaceLuminance,
+                      ),
+                    )
+                    .toList();
+              } else if (element.blockquote?.children case final children?) {
+                spans = [
+                  for (final child in children)
+                    ...?child.text?.nodes?.map(
+                      (item) => _node2Widget(
+                        item: item,
+                        opusId: opusId,
+                        colorScheme: colorScheme,
+                        surfaceLuminance: getSurfaceLuminance,
+                      ),
+                    ),
+                ];
+              }
               Widget widget = Text.rich(
                 textAlign: element.align == 1 ? TextAlign.center : null,
-                TextSpan(
-                  children: element.text?.nodes
-                      ?.map(
-                        (item) => _node2Widget(
-                          item: item,
-                          opusId: opusId,
-                          colorScheme: colorScheme,
-                          surfaceLuminance: getSurfaceLuminance,
-                        ),
-                      )
-                      .toList(),
-                ),
+                TextSpan(children: spans),
               );
               if (isQuote) {
                 widget = Container(

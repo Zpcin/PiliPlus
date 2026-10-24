@@ -60,6 +60,7 @@ class MainController extends GetxController
   final enableMYBar = Pref.enableMYBar;
   final floatingNavBar = Pref.floatingNavBar;
   final useSideBar = Pref.useSideBar;
+  final hideSideBarLabel = Pref.hideSideBarLabel;
   final mainTabBarView = Pref.mainTabBarView;
   late final optTabletNav = Pref.optTabletNav;
 
@@ -310,12 +311,10 @@ class MainController extends GetxController
         EasyThrottle.throttle(
           'topOrRefresh',
           const Duration(milliseconds: 500),
-          () {
-            if (currentNav == NavigationBarType.home) {
-              homeController.onRefresh();
-            } else if (currentNav == NavigationBarType.dynamics) {
-              dynamicController.onRefresh();
-            }
+          () => switch (currentNav) {
+            .home => homeController.onRefresh(),
+            .dynamics => dynamicController.onRefresh(),
+            .mine => null,
           },
         );
       } else {
