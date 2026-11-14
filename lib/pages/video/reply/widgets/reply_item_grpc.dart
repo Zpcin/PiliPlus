@@ -21,6 +21,7 @@ import 'package:PiliPlus/grpc/reply.dart';
 import 'package:PiliPlus/http/loading_state.dart';
 import 'package:PiliPlus/http/reply.dart';
 import 'package:PiliPlus/http/video.dart';
+import 'package:PiliPlus/pages/article/view.dart';
 import 'package:PiliPlus/pages/dynamics/widgets/vote.dart';
 import 'package:PiliPlus/pages/member/widget/medal_widget.dart';
 import 'package:PiliPlus/pages/save_panel/view.dart';
@@ -35,7 +36,6 @@ import 'package:PiliPlus/utils/color_utils.dart';
 import 'package:PiliPlus/utils/danmaku_utils.dart';
 import 'package:PiliPlus/utils/date_utils.dart';
 import 'package:PiliPlus/utils/duration_utils.dart';
-import 'package:PiliPlus/utils/extension/context_ext.dart';
 import 'package:PiliPlus/utils/extension/iterable_ext.dart';
 import 'package:PiliPlus/utils/extension/num_ext.dart';
 import 'package:PiliPlus/utils/extension/selectable_region_ext.dart';
@@ -452,7 +452,7 @@ class ReplyItemGrpc extends StatelessWidget {
     useSafeArea: true,
     isScrollControlled: true,
     constraints: BoxConstraints(
-      maxWidth: min(640, context.mediaQueryShortestSide),
+      maxWidth: min(640, MediaQuery.shortestSideOf(context)),
     ),
     builder: (context) => _morePanel(
       context: context,
@@ -887,7 +887,7 @@ class ReplyItemGrpc extends StatelessWidget {
       useSafeArea: true,
       isScrollControlled: true,
       constraints: BoxConstraints(
-        maxWidth: min(640, context.mediaQueryShortestSide),
+        maxWidth: min(640, MediaQuery.shortestSideOf(context)),
       ),
       builder: (context) => _morePanel(
         context: context,
@@ -1064,13 +1064,7 @@ class ReplyItemGrpc extends StatelessWidget {
                   String? cvid =
                       match?.group(1) ?? match?.group(2) ?? match?.group(3);
                   if (cvid != null) {
-                    Get.toNamed(
-                      '/articlePage',
-                      parameters: {
-                        'id': cvid,
-                        'type': 'read',
-                      },
-                    );
+                    ArticlePage.toArticlePage(id: cvid, type: .read);
                     return;
                   }
                   PageUtils.handleWebview(matchStr);
@@ -1249,12 +1243,9 @@ class ReplyItemGrpc extends StatelessWidget {
         recognizer = NoDeadlineTapGestureRecognizer()
           ..onTap = () => hasClickUrl
               ? PiliScheme.routePushFromUrl(content.richText.note.clickUrl)
-              : Get.toNamed(
-                  '/articlePage',
-                  parameters: {
-                    'id': content.richText.opus.opusId.toString(),
-                    'type': 'opus',
-                  },
+              : ArticlePage.toArticlePage(
+                  id: content.richText.opus.opusId.toString(),
+                  type: .opus,
                 );
       } else {
         color = colorScheme.secondary;

@@ -54,10 +54,8 @@ import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
 import 'package:PiliPlus/services/download/download_service.dart';
 import 'package:PiliPlus/utils/accounts.dart';
 import 'package:PiliPlus/utils/connectivity_utils.dart';
-import 'package:PiliPlus/utils/extension/context_ext.dart';
 import 'package:PiliPlus/utils/extension/nested_scroll_ext.dart';
 import 'package:PiliPlus/utils/extension/num_ext.dart';
-import 'package:PiliPlus/utils/extension/size_ext.dart';
 import 'package:PiliPlus/utils/page_utils.dart';
 import 'package:PiliPlus/utils/path_utils.dart';
 import 'package:PiliPlus/utils/platform_utils.dart';
@@ -378,6 +376,8 @@ class VideoDetailController extends GetxController
       this.subtitles.assignAll(subtitles);
       vttSubtitlesIndex.value = 0;
     }
+    // volume
+    volume = entry.volume;
     firstVideo = VideoItem(
       id: entry.preferedVideoQuality,
       quality: VideoQuality.fromCode(entry.preferedVideoQuality),
@@ -972,6 +972,15 @@ class VideoDetailController extends GetxController
         }
       }
 
+      final video = dash.video;
+      if (video == null || video.isEmpty) {
+        Utils.reportError(
+          'null or empty dash video:\n'
+          'bvid: $bvid, cid: $cid, seasonId: $seasonId, epId: $epId, '
+          'videoType: $_actualVideoType',
+        );
+        return;
+      }
       final cacheVideoQa = plPlayerController.cacheVideoQa!;
       final (
         int targetQuality,
@@ -979,7 +988,7 @@ class VideoDetailController extends GetxController
         VideoDecodeFormatType targetDecode,
         VideoItem targetVideo,
       ) = VideoUtils.findTargetVideo(
-        dash.video!,
+        video,
         cacheVideoQa,
         response.acceptQuality,
         response.supportFormats!,
@@ -1326,6 +1335,9 @@ class VideoDetailController extends GetxController
       viewPointList.clear();
     }
 
+    // volume
+    volume = null;
+
     if (!isFileSource) {
       // language
       languages.value = null;
@@ -1515,11 +1527,11 @@ class VideoDetailController extends GetxController
         useSafeArea: true,
         isScrollControlled: true,
         constraints: BoxConstraints(
-          maxWidth: min(640, context.mediaQueryShortestSide),
+          maxWidth: min(640, MediaQuery.shortestSideOf(context)),
         ),
         builder: (context) {
           final maxChildSize =
-              PlatformUtils.isMobile && !context.mediaQuerySize.isPortrait
+              PlatformUtils.isMobile && !MediaQuery.isPortraitOf(context)
               ? 1.0
               : 0.7;
           return DraggableScrollableSheet(
